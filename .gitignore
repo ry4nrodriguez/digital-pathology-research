@@ -42,4 +42,8 @@ Thumbs.db
 
 # Project specific
 test_batch/results/
-test_batch/smart_selection_results/ 
+test_batch/smart_selection_results/
+
+# Large image directories
+Test_Images/
+Vessel Images/ 
