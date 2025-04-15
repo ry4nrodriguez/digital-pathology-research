@@ -61,6 +61,26 @@ This direct implementation approach was chosen because the available REET toolbo
 2. Run the script: `python3 noise_blur_transforms.py`
 3. Results (separate comparison images for noise and blur effects) will be saved in the `test_batch_Noise&Blur/results` directory.
 
+### HED Stain Augmentation (`hed_transform.py`)
+
+This script applies the HEDTransform from the REET toolbox to simulate variations in Hematoxylin, Eosin, and DAB stain concentrations in histopathology images. It reads images from a specified input directory, applies randomized multiplicative (alpha) and additive (beta) perturbations to the H/E/D channels, and saves side-by-side comparison images (Original vs. HED-Augmented) in a results subdirectory.
+
+**Rationale:**
+- The HEDTransform allows direct manipulation of stain channels after color deconvolution, simulating real-world variability in staining protocols and concentrations.
+- Randomizing alpha (multiplicative, around 1) and beta (additive, around 0) for each channel is a standard augmentation approach, as reflected in the REET codebase and literature.
+
+**Features:**
+- Reads images from `test_batch_HEDTransform`.
+- Applies HEDTransform with random alpha in [0.8, 1.2] and beta in [-0.2, 0.2] for each channel.
+- Saves side-by-side comparison images in `test_batch_HEDTransform/results`.
+- Fully documented for reproducibility and clarity.
+
+**Usage:**
+
+1. Place original images in `test_batch_HEDTransform`.
+2. Run: `python3 hed_transform.py`
+3. Results will be in `test_batch_HEDTransform/results`.
+
 ## Test Data Directories
 
 These directories contain sample images used for testing the different augmentation scripts. Each directory typically contains original images and a `results` subdirectory where the output comparison images are saved.
@@ -68,6 +88,7 @@ These directories contain sample images used for testing the different augmentat
 - **`test_batch_Reinhard/`**: Input images for testing `stain_norm.py`. Results are saved in `test_batch_Reinhard/results/`.
 - **`test_batch_BlurTransform/`**: Input images for testing `blur_transform.py` (regional blur). Results are saved in `test_batch_BlurTransform/results/`.
 - **`test_batch_Noise&Blur/`**: Input images for testing `noise_blur_transforms.py` (global noise and blur). Results are saved in `test_batch_Noise&Blur/results/`.
+- **`test_batch_HEDTransform/`**: Input images for testing `hed_transform.py` (HED stain augmentation). Results are saved in `test_batch_HEDTransform/results/`.
 - **`Test_Images/`**: (If still present) May contain earlier test images or originals. Currently not directly used by the primary scripts.
 
 ## Requirements
