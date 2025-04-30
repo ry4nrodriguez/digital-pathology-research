@@ -7,26 +7,17 @@ and saves a side-by-side comparison image (Original vs. Blurred) to a
 results subdirectory.
 
 **Current Implementation Note:**
-This version uses a **fixed, hardcoded region** for blurring (defined by
-`blur_corner_x`, `blur_corner_y`, `blur_height`, `blur_width`). This was done
-initially for simplicity and ease of verifying the blur effect itself.
-However, for effective data augmentation to train robust machine learning models,
-applying blur to the *same* region every time is suboptimal. It doesn't fully
-simulate real-world variations where blur can occur anywhere.
-
-**Future Enhancement:**
-A more standard data augmentation approach would involve **randomizing** the blur
-region (coordinates, and potentially size/intensity) for each processed image.
-This helps prevent models from overfitting to specific spatial characteristics and
-improves generalization by simulating diverse, real-world conditions.
-This randomization is a potential future step for this script.
+This version supports both fixed and randomized regions for blurring. When using
+randomized mode, the blur region (position, size) is randomly determined for each image,
+providing better data augmentation for training robust machine learning models.
 
 Key functionalities:
 - Reads images (JPG, PNG, TIF) from an input folder.
 - Determines image dimensions automatically from the first valid image.
 - Instantiates and configures REET's BlurTransform.
-- Defines the blur region (top-left corner, height, width) and blur parameters
-  (kernel size, sigma).
+- Supports both fixed and randomized blur regions:
+  - Fixed mode: Uses specified parameters for all images
+  - Random mode: Randomizes position and optionally size/intensity for each image
 - Processes each image:
     - Applies the blur transform to the specified region.
     - Creates a composite image showing the original and blurred versions
@@ -40,6 +31,7 @@ import os
 import cv2
 import torch
 import numpy as np
+import random
 import shutil # Used for file operations if needed, though currently only used for copying in commented-out code.
 # Ensure the path to your REET installation is correct or that it's in your PYTHONPATH
 # The script requires the REET toolbox to be installed or accessible.
@@ -49,13 +41,20 @@ from REET.reetoolbox.reetoolbox.transforms import BlurTransform
 
 
 # Note: Changed output_dir logic to be relative to input_dir
-def apply_blur_transform(input_dir, results_subdir_name, device):
+def apply_blur_transform(input_dir, results_subdir_name, device, 
+                         randomize_blur=True, 
+                         min_region_size=50, 
+                         max_region_size=200,
+                         min_kernel_size=3, 
+                         max_kernel_size=9,
+                         min_sigma=5.0, 
+                         max_sigma=15.0,
+                         fixed_params=None):
     """Applies regional blur and generates side-by-side comparison images.
 
-    Reads images from `input_dir`, applies a Gaussian blur defined by
-    hardcoded parameters (corner coordinates, dimensions, kernel size, sigma)
-    to each image using the specified `device`, and saves a comparison image
-    showing the original and blurred versions side-by-side into a subdirectory
+    Reads images from `input_dir`, applies a Gaussian blur to each image
+    using the specified `device`, and saves a comparison image showing 
+    the original and blurred versions side-by-side into a subdirectory
     named `results_subdir_name` within `input_dir`.
 
     Args:
@@ -66,12 +65,23 @@ def apply_blur_transform(input_dir, results_subdir_name, device):
                                    This directory will be created if it doesn't exist.
         device (torch.device): The PyTorch device ('cuda' or 'cpu') to use for
                                tensor operations and the blur transformation.
+        randomize_blur (bool): If True, randomizes the blur region for each image.
+                              If False, uses fixed parameters for all images.
+        min_region_size (int): Minimum size (height/width) for random blur regions.
+        max_region_size (int): Maximum size (height/width) for random blur regions.
+        min_kernel_size (int): Minimum kernel size for Gaussian blur (must be odd).
+        max_kernel_size (int): Maximum kernel size for Gaussian blur (must be odd).
+        min_sigma (float): Minimum sigma value for Gaussian blur.
+        max_sigma (float): Maximum sigma value for Gaussian blur.
+        fixed_params (dict, optional): Dictionary of fixed blur parameters to use if
+                                      randomize_blur is False. If None, default values are used.
     """
     print(f"Input directory: {input_dir}")
     # Construct the full path for the output directory
     output_dir = os.path.join(input_dir, results_subdir_name)
     print(f"Output directory for results: {output_dir}")
     print(f"Using device: {device}")
+    print(f"Blur mode: {'Randomized' if randomize_blur else 'Fixed'}")
 
     # --- Input Directory Validation ---
     if not os.path.exists(input_dir):
@@ -106,6 +116,8 @@ def apply_blur_transform(input_dir, results_subdir_name, device):
     # Batch size (N) is assumed to be 1 as we process images individually.
     input_shape = None
     sample_img_loaded = False
+    sample_img_height = None
+    sample_img_width = None
     for fname in image_files:
         first_image_path = os.path.join(input_dir, fname)
         try:
@@ -114,6 +126,7 @@ def apply_blur_transform(input_dir, results_subdir_name, device):
             if sample_img is not None:
                 # Get dimensions (OpenCV shape: H, W, C)
                 img_height, img_width, channels = sample_img.shape
+                sample_img_height, sample_img_width = img_height, img_width
                 # Define the shape for PyTorch (N, C, H, W)
                 input_shape = (1, channels, img_height, img_width)
                 print(f"Detected image shape (H, W, C): ({img_height}, {img_width}, {channels}) from {fname}")
@@ -131,16 +144,17 @@ def apply_blur_transform(input_dir, results_subdir_name, device):
          return
     # --------------------------------------------------------
 
-    # --- Configure BlurTransform Parameters --- #
-    # These parameters define the properties of the blur applied.
-    # **NOTE:** These are currently FIXED values, applying the same blur region to all images.
-    # For data augmentation, these would typically be randomized per image.
-    blur_corner_x = 50      # X-coordinate (from left) of the top-left corner of the blur region.
-    blur_corner_y = 50      # Y-coordinate (from top) of the top-left corner of the blur region.
-    blur_height = 100       # Height of the rectangular blur region.
-    blur_width = 100        # Width of the rectangular blur region.
-    blur_kernel_size = 5    # Size of the Gaussian kernel (must be odd). Larger values mean more blur.
-    blur_sigma = 10.0       # Standard deviation of the Gaussian kernel. Larger values mean more blur.
+    # --- Configure Default Blur Parameters --- #
+    # These parameters are used for fixed mode or as fallback
+    if fixed_params is None:
+        fixed_params = {
+            "blur_corner_x": 50,      # X-coordinate (from left) of the top-left corner of the blur region.
+            "blur_corner_y": 50,      # Y-coordinate (from top) of the top-left corner of the blur region.
+            "blur_height": 100,       # Height of the rectangular blur region.
+            "blur_width": 100,        # Width of the rectangular blur region.
+            "blur_kernel_size": 5,    # Size of the Gaussian kernel (must be odd). Larger values mean more blur.
+            "blur_sigma": 10.0        # Standard deviation of the Gaussian kernel. Larger values mean more blur.
+        }
     # ----------------------------------------- #
 
     # --- Instantiate BlurTransform ---
@@ -156,18 +170,13 @@ def apply_blur_transform(input_dir, results_subdir_name, device):
 
     # --- Initialize Counters ---
     processed_count = 0 # Counts successfully generated comparison images.
-    # copied_count = 0 # No longer used as originals aren't copied separately.
     error_count = 0     # Counts images that failed during processing.
 
     # --- Main Processing Loop ---
     # Iterate through each discovered image file.
     for filename in image_files:
         input_path = os.path.join(input_dir, filename)
-        # Define the output filename for the side-by-side comparison image.
-        # Includes blur parameters for easy identification.
-        comparison_output_filename = f"comparison_cx{blur_corner_x}_cy{blur_corner_y}_h{blur_height}_w{blur_width}_k{blur_kernel_size}_s{int(blur_sigma)}_{filename}"
-        comparison_output_path = os.path.join(output_dir, comparison_output_filename)
-
+        
         print(f"\nProcessing {filename}...")
 
         try:
@@ -187,6 +196,46 @@ def apply_blur_transform(input_dir, results_subdir_name, device):
                  print(f"  Skipping: Image {filename} has shape {img_original_bgr.shape} which differs from expected input shape ({input_shape[2]}, {input_shape[3]}, {input_shape[1]}).")
                  error_count +=1
                  continue
+            
+            # --- Generate Blur Parameters ---
+            # Either use randomized parameters or fixed parameters based on configuration
+            if randomize_blur:
+                # Randomize blur region parameters
+                # Ensure kernel size is odd (required for Gaussian blur)
+                possible_kernel_sizes = [k for k in range(min_kernel_size, max_kernel_size + 1) if k % 2 == 1]
+                if not possible_kernel_sizes:
+                    # Fallback if no valid kernel sizes in range
+                    possible_kernel_sizes = [min_kernel_size if min_kernel_size % 2 == 1 else min_kernel_size + 1]
+                
+                # Randomly select region size
+                blur_height = random.randint(min_region_size, max_region_size)
+                blur_width = random.randint(min_region_size, max_region_size)
+                
+                # Ensure region fits within image bounds
+                max_corner_x = max(0, sample_img_width - blur_width - 1)
+                max_corner_y = max(0, sample_img_height - blur_height - 1)
+                
+                # Randomly select region position
+                blur_corner_x = random.randint(0, max_corner_x)
+                blur_corner_y = random.randint(0, max_corner_y)
+                
+                # Randomly select blur parameters
+                blur_kernel_size = random.choice(possible_kernel_sizes)
+                blur_sigma = random.uniform(min_sigma, max_sigma)
+                
+                print(f"  Randomized blur parameters: position=({blur_corner_x}, {blur_corner_y}), "
+                      f"size=({blur_width}, {blur_height}), kernel={blur_kernel_size}, sigma={blur_sigma:.2f}")
+            else:
+                # Use fixed parameters
+                blur_corner_x = fixed_params["blur_corner_x"]
+                blur_corner_y = fixed_params["blur_corner_y"]
+                blur_height = fixed_params["blur_height"]
+                blur_width = fixed_params["blur_width"]
+                blur_kernel_size = fixed_params["blur_kernel_size"]
+                blur_sigma = fixed_params["blur_sigma"]
+                
+                print(f"  Using fixed blur parameters: position=({blur_corner_x}, {blur_corner_y}), "
+                      f"size=({blur_width}, {blur_height}), kernel={blur_kernel_size}, sigma={blur_sigma:.2f}")
 
             # --- Apply Blur Transform ---
             # 1. Convert BGR (OpenCV) to RGB (standard for many libraries including REET)
@@ -230,7 +279,6 @@ def apply_blur_transform(input_dir, results_subdir_name, device):
             blurred_img_bgr = cv2.cvtColor(blurred_img_np, cv2.COLOR_RGB2BGR)
             # --- End Blur Transform Application ---
 
-
             # --- Create Side-by-Side Comparison Image ---
             h, w, _ = img_original_bgr.shape # Get dimensions from original
             padding = 10             # Space between the two images.
@@ -263,8 +311,13 @@ def apply_blur_transform(input_dir, results_subdir_name, device):
             # Draw the text onto the canvas.
             cv2.putText(comparison_img, text_orig, (text_x_orig, text_y_orig), font, font_scale, font_color, font_thickness, cv2.LINE_AA)
 
-            # Add "Blurred" Label
-            text_blurred = "Blurred"
+            # Add "Blurred" Label with parameters
+            # Create a more detailed label for the blurred image
+            if randomize_blur:
+                text_blurred = f"Blurred (Randomized)"
+            else:
+                text_blurred = f"Blurred (Fixed)"
+                
             text_size_blurred, _ = cv2.getTextSize(text_blurred, font, font_scale, font_thickness)
             # Calculate X position for centered text above the right image.
             text_x_blurred = w + padding + (w - text_size_blurred[0]) // 2
@@ -272,6 +325,14 @@ def apply_blur_transform(input_dir, results_subdir_name, device):
             cv2.putText(comparison_img, text_blurred, (text_x_blurred, text_y_blurred), font, font_scale, font_color, font_thickness, cv2.LINE_AA)
             # --------------------------------------------
 
+            # Define the output filename for the side-by-side comparison image.
+            # Include method and blur parameters in the filename.
+            if randomize_blur:
+                comparison_output_filename = f"comparison_random_cx{blur_corner_x}_cy{blur_corner_y}_h{blur_height}_w{blur_width}_k{blur_kernel_size}_s{int(blur_sigma)}_{filename}"
+            else:
+                comparison_output_filename = f"comparison_fixed_cx{blur_corner_x}_cy{blur_corner_y}_h{blur_height}_w{blur_width}_k{blur_kernel_size}_s{int(blur_sigma)}_{filename}"
+                
+            comparison_output_path = os.path.join(output_dir, comparison_output_filename)
 
             # --- Save the Comparison Image ---
             # Save the combined image to the results directory.
@@ -282,9 +343,6 @@ def apply_blur_transform(input_dir, results_subdir_name, device):
         except Exception as e:
             # --- Error Handling ---
             # Catch any exceptions during the processing of a single file.
-            # Print traceback for detailed debugging if needed
-            # import traceback
-            # print(traceback.format_exc())
             print(f"  Error processing {filename}: {e}")
             error_count += 1 # Increment error counter.
 
@@ -300,10 +358,32 @@ if __name__ == "__main__":
     # Define the main input directory containing the original images.
     INPUT_IMAGE_DIR = "test_batch_BlurTransform"
     # Define the name for the subdirectory where results will be saved.
-    RESULTS_SUBDIR = "results"
+    RESULTS_SUBDIR = "results_random"
     # Automatically select CUDA (GPU) if available, otherwise use CPU.
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Configuration for blur randomization
+    RANDOMIZE_BLUR = True  # Set to False to use fixed parameters
+    
+    # Ranges for randomization (used only when RANDOMIZE_BLUR is True)
+    MIN_REGION_SIZE = 50   # Minimum height/width of blur region
+    MAX_REGION_SIZE = 200  # Maximum height/width of blur region
+    MIN_KERNEL_SIZE = 3    # Minimum blur kernel size (must be odd)
+    MAX_KERNEL_SIZE = 9    # Maximum blur kernel size (must be odd)
+    MIN_SIGMA = 5.0        # Minimum blur sigma (standard deviation)
+    MAX_SIGMA = 15.0       # Maximum blur sigma (standard deviation)
     # ------------------- #
 
     # Call the main processing function with the configured parameters.
-    apply_blur_transform(INPUT_IMAGE_DIR, RESULTS_SUBDIR, DEVICE)
+    apply_blur_transform(
+        input_dir=INPUT_IMAGE_DIR,
+        results_subdir_name=RESULTS_SUBDIR,
+        device=DEVICE,
+        randomize_blur=RANDOMIZE_BLUR,
+        min_region_size=MIN_REGION_SIZE,
+        max_region_size=MAX_REGION_SIZE,
+        min_kernel_size=MIN_KERNEL_SIZE,
+        max_kernel_size=MAX_KERNEL_SIZE,
+        min_sigma=MIN_SIGMA,
+        max_sigma=MAX_SIGMA
+    )
